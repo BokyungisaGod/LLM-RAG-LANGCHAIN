@@ -10,6 +10,7 @@ import urllib.parse
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import logging
+import time
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +27,7 @@ client = OpenAI(
 chroma_client = chromadb.Client(Settings(persist_directory="./chroma_db"))
 
 # 컬렉션 생성 또는 기존 컬렉션 가져오기
-collection = chroma_client.get_or_create_collection(name="festival_collection2")
+collection = chroma_client.get_or_create_collection(name="festival_collection3")
 
 def prepare_documents(df: pd.DataFrame):
     logger.info("문서 준비 시작")
@@ -64,11 +65,19 @@ def add_documents(texts: List[str]):
 
     if valid_texts and valid_embeddings:
         logger.info(f"{len(valid_texts)}개의 유효한 문서를 ChromaDB에 추가")
-        collection.add(
-            embeddings=valid_embeddings,
-            documents=valid_texts,
-            ids=[f"doc_{i}" for i in range(len(valid_texts))]
-        )
+        for i in range(0, len(valid_texts), 10):
+            batch_texts = valid_texts[i:i+10]
+            batch_embeddings = valid_embeddings[i:i+10]
+            batch_ids = [f"doc_{j}" for j in range(i, i+len(batch_texts))]
+            
+            collection.add(
+                embeddings=batch_embeddings,
+                documents=batch_texts,
+                ids=batch_ids
+            )
+            
+            logger.info(f"{i+len(batch_texts)}개의 문서 추가 완료")
+            time.sleep(0.5)
     else:
         logger.warning("유효한 임베딩이 생성되지 않았습니다. 입력 텍스트와 API 키를 확인하세요.")
 
