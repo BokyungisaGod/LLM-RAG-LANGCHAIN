@@ -1,32 +1,27 @@
 import pandas as pd
 from typing import List
 from openai import OpenAI
-from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings
 import os
 from fastapi import FastAPI
 from pydantic import BaseModel
+import urllib.parse
+from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 
-# OpenAI 클라이언트 설정
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# SentenceTransformer 모델 로드
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# .env 파일에서 키 불러오기
+load_dotenv()
+client = OpenAI(
+    api_key="up_oLxU2aBXrVgGjZY3ejAbH021gtH0e",
+    base_url="https://api.upstage.ai/v1/solar"
+)
 
 # ChromaDB 클라이언트 설정
 chroma_client = chromadb.Client(Settings(persist_directory="./chroma_db"))
 
 # 컬렉션 생성 또는 기존 컬렉션 가져오기
 collection = chroma_client.get_or_create_collection(name="festival_collection")
-
-# CSV 파일 읽기
-df = pd.read_csv('/Users/bokyung/Desktop/LLM-RAG-LANGCHAIN/0907/2024년 지역축제 개최계획(수정).csv', encoding='utf-8')
-df.columns = df.iloc[0]
-df = df[1:]
-
-# 열 이름에서 개행 문자 제거 및 공백 제거
-df.columns = df.columns.str.replace('\n', '').str.strip()
 
 def prepare_documents(df: pd.DataFrame):
     documents = []
@@ -39,19 +34,42 @@ def prepare_documents(df: pd.DataFrame):
     return documents
 
 def add_documents(texts: List[str]):
-    # 문서 임베딩
-    embeddings = model.encode(texts).tolist()
-    
-    # ChromaDB에 문서 추가
-    collection.add(
-        embeddings=embeddings,
-        documents=texts,
-        ids=[f"doc_{i}" for i in range(len(texts))]
-    )
+    # Solar 모델을 사용하여 문서 임베딩
+    embeddings = []
+    for text in texts:
+        # 유니코드 문자를 안전하게 처리
+        encoded_text = text.encode('utf-8', errors='ignore').decode('utf-8')
+        try:
+            response = client.embeddings.create(
+                input=encoded_text,
+                model="solar-embedding-1-large-query"
+            )
+            embeddings.append(response.data[0].embedding)
+        except Exception as e:
+            print(f"Error creating embedding for text: {encoded_text}")
+            print(f"Error: {e}")
+            continue  # 오류가 발생한 텍스트는 건너뛰고 계속 진행
+
+    # 임베딩이 생성된 텍스트만 ChromaDB에 추가
+    valid_texts = [text for text, emb in zip(texts, embeddings) if emb]
+    valid_embeddings = [emb for emb in embeddings if emb]
+
+    if valid_texts and valid_embeddings:
+        collection.add(
+            embeddings=valid_embeddings,
+            documents=valid_texts,
+            ids=[f"doc_{i}" for i in range(len(valid_texts))]
+        )
+    else:
+        print("No valid embeddings were created. Check your input texts and API key.")
 
 def query(question: str, k: int = 3):
-    # 질문 임베딩
-    query_embedding = model.encode(question).tolist()
+    # Solar 모델을 사용하여 질문 임베딩
+    response = client.embeddings.create(
+        input=question,
+        model="solar-embedding-1-large-query"
+    )
+    query_embedding = response.data[0].embedding
     
     # 유사한 문서 검색
     results = collection.query(
@@ -62,28 +80,23 @@ def query(question: str, k: int = 3):
     return results['documents'][0]
 
 def generate_answer(question: str, context: List[str]):
-    # OpenAI API를 사용하여 답변 생성
+    # Solar API를 사용하여 답변 생성
     prompt = f"Context:\n{''.join(context)}\n\nQuestion: {question}\nAnswer:"
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="solar-1-mini-chat",
         messages=[
             {"role": "system", "content": "You are a helpful assistant knowledgeable about Korean festivals."},
             {"role": "user", "content": prompt}
-        ],
-        max_tokens=150,
-        n=1,
-        stop=None,
-        temperature=0.7,
+        ]
     )
     return response.choices[0].message.content.strip()
-
-app = FastAPI()
 
 class Question(BaseModel):
     text: str
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 시작 시 실행될 코드
     global df, documents
     # CSV 파일 읽기
     df = pd.read_csv('/Users/bokyung/Desktop/LLM-RAG-LANGCHAIN/0907/2024년 지역축제 개최계획(수정).csv', encoding='utf-8')
@@ -96,9 +109,23 @@ async def startup_event():
     # 문서 준비 및 추가
     documents = prepare_documents(df)
     add_documents(documents)
+    
+    yield
+    
+    # 종료 시 실행될 코드
+
+app = FastAPI()
 
 @app.post("/ask")
 async def ask_question(question: Question):
-    relevant_docs = query(question.text)
-    answer = generate_answer(question.text, relevant_docs)
-    return {"question": question.text, "answer": answer}
+    try:
+        relevant_docs = query(question.text)
+        answer = generate_answer(question.text, relevant_docs)
+        return {"question": question.text, "answer": answer}
+    except Exception as e:
+        print(f"Error processing question: {e}")
+        return {"error": str(e)}, 500
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
