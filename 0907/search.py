@@ -1,5 +1,8 @@
+import requests
 import streamlit as st
 
+# SERVER_URL 정의 추가
+SERVER_URL = "http://localhost:8000" 
 # 페이지 설정을 스크립트의 가장 처음으로 이동
 st.set_page_config(page_title="축제 정보 검색", page_icon="🎉")
 
@@ -44,9 +47,16 @@ def embedding_search():
 def augmented_search():
     query = st.session_state.augmented_query
     if query:
-        # add_recent_search(query)
-        # AI 증강생성 검색 로직 구현 필요
-        st.warning("AI 증강생성 검색 기능은 아직 구현되지 않았습니다.")
+        response = requests.post(f"{SERVER_URL}/ask", json={"text": query})
+        
+        if response.status_code == 200:
+            answer = response.json()["answer"]
+            st.session_state.search_history.append(f"**AI - RAG 검색어: {query}**\n\n{answer}\n\n---\n\n")
+
+        else:
+            st.error("서버에서 응답을 받지 못했습니다. 다시 시도해 주세요.")
+    else:
+        st.warning("질문을 입력해 주세요.")
 
 def display_results(results, query, search_type):
     if not results.empty:
