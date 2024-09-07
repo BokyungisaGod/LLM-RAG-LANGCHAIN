@@ -4,12 +4,17 @@ import requests
 # FastAPI 서버 URL
 SERVER_URL = "http://localhost:8000"
 
-st.title("한국 축제 정보 챗봇")
+st.title("한국 문화 축제 AI 챗봇")
 
-# 사용자 입력
-user_question = st.text_input("축제에 대해 궁금한 점을 물어보세요:")
+# 폼 생성
+with st.form(key='question_form'):
+    # 사용자 입력
+    user_question = st.text_input("축제에 대해 궁금한 점을 물어보세요:")
+    
+    # 제출 버튼 (엔터로도 동작)
+    submit_button = st.form_submit_button(label='질문하기')
 
-if st.button("질문하기"):
+if submit_button:
     if user_question:
         # 서버에 요청 보내기
         response = requests.post(f"{SERVER_URL}/ask", json={"text": user_question})
