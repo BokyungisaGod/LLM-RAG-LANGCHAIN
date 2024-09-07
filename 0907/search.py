@@ -51,6 +51,7 @@ def augmented_search():
         
         if response.status_code == 200:
             answer = response.json()["answer"]
+            answer = highlight_match(answer, query)
             st.session_state.search_history.append(f"**AI - RAG 검색어: {query}**\n\n{answer}\n\n---\n\n")
 
         else:
