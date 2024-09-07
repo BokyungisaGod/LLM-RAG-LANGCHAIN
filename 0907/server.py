@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import logging
 import time
+import uuid
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -24,19 +25,19 @@ client = OpenAI(
 )
 
 # ChromaDB 클라이언트 설정
-chroma_client = chromadb.Client(Settings(persist_directory="./chroma_db"))
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 # 컬렉션 생성 또는 기존 컬렉션 가져오기
-collection = chroma_client.get_or_create_collection(name="festival_collection3")
+collection = chroma_client.get_or_create_collection(name="festival_collection4")
 
 def prepare_documents(df: pd.DataFrame):
     logger.info("문서 준비 시작")
     documents = []
     for _, row in df.iterrows():
-        doc = f"축제명: {row['축제명']}, 지역: {row['광역자치단체명']} {row['기초자치단체명']}, "
-        doc += f"유형: {row['축제유형']}, 기간: {row['개최기간']}, 장소: {row['개최장소']}, "
-        doc += f"방식: {row['개최방식']}, 예산: {row['합계 예산(백만원)']}, "
-        doc += f"방문객 수: {row['방문객수(2023년) 합계']}"
+        doc = f"축제명: {row['축제명']}, 광역자치단체명/기초자치단체명: {row['광역자치단체명']} {row['기초자치단체명']}, "
+        doc += f"유형: {row['축제유형']}, 개최 기간: 2024. {row['개최기간']}, 장소: {row['개최장소']}, "
+        doc += f"예산(단위:백만원): {row['합계 예산(백만원)']}, "
+        doc += f"2023년 방문객 수: {row['방문객수(2023년) 합계']}"
         documents.append(doc)
     logger.info(f"총 {len(documents)}개의 문서 준비 완료")
     return documents
@@ -68,7 +69,9 @@ def add_documents(texts: List[str]):
         for i in range(0, len(valid_texts), 10):
             batch_texts = valid_texts[i:i+10]
             batch_embeddings = valid_embeddings[i:i+10]
-            batch_ids = [f"doc_{j}" for j in range(i, i+len(batch_texts))]
+            #batch_ids = [f"doc_{j}" for j in range(i, i+len(batch_texts))]
+            #batch_ids를 uuid로 변경
+            batch_ids = [str(uuid.uuid4()) for j in range(i, i+len(batch_texts))]
             
             collection.add(
                 embeddings=batch_embeddings,
@@ -81,7 +84,7 @@ def add_documents(texts: List[str]):
     else:
         logger.warning("유효한 임베딩이 생성되지 않았습니다. 입력 텍스트와 API 키를 확인하세요.")
 
-def query(question: str, k: int = 3):
+def query(question: str, k: int = 10):
     logger.info(f"질문에 대한 임베딩 생성 시작: {question}")
     # Solar 모델을 사용하여 질문 임베딩
     response = client.embeddings.create(
@@ -89,12 +92,13 @@ def query(question: str, k: int = 3):
         model="solar-embedding-1-large-query"
     )
     query_embedding = response.data[0].embedding
-    
+    print(len(collection.get()))
     # 유사한 문서 검색
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=k
     )
+    print(results)
     
     logger.info(f"{k}개의 유사한 문서 검색 완료")
     return results['documents'][0]
@@ -103,7 +107,8 @@ system_prompt = """
 당신의 역할은 Context를 바탕으로 질문에 대한 답변을 제공하는 것입니다.
 Context에 없는 내용은 절대 추가하지 말아주세요.
 Question은 사용자의 질문입니다.
-Answer은 사용자에게 제공할 답변입니다.
+Answer은 사용자에게 제공할 답변입니다. 최대한 정확하고 자세히 답변해주세요.
+
 """
 
 
@@ -115,7 +120,14 @@ def generate_answer(question: str, context: List[str]):
         print(c)
         print("-"*100)
     
-    prompt = f"Context:\n{''.join(context)}\n\nQuestion: {question}\nAnswer:"
+    contexts = '\n'.join(context)
+    prompt = f"""Context:
+    {contexts}
+    
+    Question: {question}
+    
+    Answer:"""
+    
     response = client.chat.completions.create(
         model="solar-1-mini-chat",
         messages=[
@@ -153,7 +165,9 @@ async def lifespan(app: FastAPI):
     
     logger.info("애플리케이션 종료")
 
-app = FastAPI(lifespan=lifespan)
+#app = FastAPI(lifespan=lifespan)
+app = FastAPI()
+
 
 @app.post("/ask")
 async def ask_question(question: Question):
@@ -161,6 +175,7 @@ async def ask_question(question: Question):
     try:
         relevant_docs = query(question.text)
         logger.info("관련 문서 검색 완료")
+        print(relevant_docs)
         answer = generate_answer(question.text, relevant_docs)
         logger.info("답변 생성 완료")
         return {"question": question.text, "answer": answer}
@@ -171,4 +186,5 @@ async def ask_question(question: Question):
 if __name__ == "__main__":
     import uvicorn
     logger.info("서버 시작")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # reload=True로 설정하여 코드 변경 시 자동으로 서버 재시작
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
