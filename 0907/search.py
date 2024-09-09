@@ -18,6 +18,7 @@ def load_data():
     return df
 
 df = load_data()
+print(df.head(5))
 
 # 검색 함수 수정
 def search_data(query):
@@ -32,10 +33,24 @@ def highlight_match(text, query):
 # 탭별 검색 함수
 def general_search():
     query = st.session_state.general_query
+    # if query:
+    #     # add_recent_search(query)
+    #     results = search_data(query)
+    #     display_results(results, query, "일반")
     if query:
-        # add_recent_search(query)
-        results = search_data(query)
-        display_results(results, query, "일반")
+        response = requests.post(f"{SERVER_URL}/search", json={"text": query})
+        
+        if response.status_code == 200:
+            print(response)
+            answer = response.json()["answer"]
+            # 쿼리 변수 앞뒤 공백 제거
+            display_results(answer, query, "일반")
+        elif response.status_code == 429:
+            st.error("요청 한도를 초과했습니다. 1분 후에 다시 시도해 주세요.")
+        else:
+            st.error("서버에서 응답을 받지 못했습니다. 다시 시도해 주세요.")
+    else:
+        st.warning("질문을 입력해 주세요.")
 
 def embedding_search():
     query = st.session_state.embedding_query
@@ -52,27 +67,27 @@ def augmented_search():
         if response.status_code == 200:
             answer = response.json()["answer"]
             answer = highlight_match(answer, query)
-            st.session_state.search_history.append(f"**AI - RAG 검색어: {query}**\n\n{answer}\n\n---\n\n")
-
+            # 쿼리 변수 앞뒤 공백 제거
+            query2 = query.strip()
+            st.session_state.search_history.append(f"**AI - RAG 검색어: {query2}**\n\n{answer}\n\n---\n\n")
+        elif response.status_code == 429:
+            st.error("요청 한도를 초과했습니다. 1분 후에 다시 시도해 주세요.")
         else:
             st.error("서버에서 응답을 받지 못했습니다. 다시 시도해 주세요.")
     else:
         st.warning("질문을 입력해 주세요.")
 
 def display_results(results, query, search_type):
-    if not results.empty:
-        response = f"{search_type} 검색 결과: {len(results)}개의 축제를 찾았습니다.\n\n"
-        for _, row in results.iterrows():
-            festival_info = []
-            if '축제명' in row:
-                festival_info.append(highlight_match(row['축제명'], query))
-            if '시군구명' in row:
-                festival_info.append(highlight_match(row['시군구명'], query))
-            if '개최기간' in row:
-                festival_info.append(highlight_match(row['개최기간'], query))
-            response += f"- {', '.join(festival_info)}\n"
-    else:
-        response = f"{search_type} 검색 결과가 없습니다."
+    response = f"{search_type} 검색 결과: {len(results)}개의 축제를 찾았습니다.\n\n"
+    for row in results:
+        festival_info = []
+        if '축제명' in row:
+            festival_info.append(highlight_match(row['축제명'], query))
+        if '시군구명' in row:
+            festival_info.append(highlight_match(row['시군구명'], query))
+        if '개최기간' in row:
+            festival_info.append(highlight_match(row['개최기간'], query))
+        response += f"- {', '.join(festival_info)}\n"
 
     # 새로운 검색 결과를 세션 상태에 추가
     st.session_state.search_history.append(f"**{search_type} 검색어: {query}**\n\n{response}\n\n---\n\n")
@@ -97,7 +112,9 @@ with st.sidebar:
     
     st.session_state.current_tab = st.radio(
         "검색 유형 선택",
-        ["일반 검색", "AI **임베딩** 검색", "AI **증강생성(RAG)** 검색"]
+        #["일반 검색", "AI **임베딩** 검색", "AI **증강생성(RAG)** 검색"]
+        ["일반 검색", "AI **증강생성(RAG)** 검색"]
+    
     )
     
     if st.session_state.current_tab == "일반 검색":
