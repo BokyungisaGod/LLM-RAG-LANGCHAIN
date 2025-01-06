@@ -24,9 +24,8 @@ logger = logging.getLogger(__name__)
 # .env 파일에서 키 불러오기
 load_dotenv()
 client = OpenAI(
-    api_key="up_oLxU2aBXrVgGjZY3ejAbH021gtH0e",
-    base_url="https://api.upstage.ai/v1/solar",
-    max_tokens=1024
+    api_key="up_6HdV10h2hpWt9rprNXNBCgwYXdssN",
+    base_url="https://api.upstage.ai/v1/solar"
 )
 
 # ChromaDB 클라이언트 설정
@@ -34,6 +33,10 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 # 컬렉션 생성 또는 기존 컬렉션 가져오기
 collection = chroma_client.get_or_create_collection(name="festival_collection4")
+
+# 현재 파일의 디렉토리 경로를 가져옴
+current_dir = os.path.dirname(os.path.abspath(__file__))
+csv_path = os.path.join(current_dir, '2024년 지역축제 개최계획(수정).csv')
 
 def prepare_documents(df: pd.DataFrame):
     logger.info("문서 준비 시작")
@@ -49,52 +52,49 @@ def prepare_documents(df: pd.DataFrame):
 
 def add_documents(texts: List[str]):
     logger.info(f"{len(texts)}개의 문서에 대한 임베딩 생성 시작")
+    batch_size = 32  # 한 번에 처리할 문서 수 증가
     embeddings = []
-    for i, text in enumerate(texts):
-        # 유니코드 문자를 안전하게 처리
-        encoded_text = text.encode('utf-8', errors='ignore').decode('utf-8')
+    
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+        # 배치 단위로 임베딩 생성
         try:
             response = client.embeddings.create(
-                input=encoded_text,
-                model="solar-embedding-1-large-query"
+                input=batch_texts,
+                model="embedding-query"
             )
-            embeddings.append(response.data[0].embedding)
-            if i % 100 == 0:
-                logger.info(f"{i}개의 임베딩 생성 완료")
+            batch_embeddings = [item.embedding for item in response.data]
+            embeddings.extend(batch_embeddings)
+            
+            logger.info(f"{i+len(batch_texts)}개의 임베딩 생성 완료")
+            time.sleep(0.1)  # API 요청 간격 조절
         except Exception as e:
-            logger.error(f"텍스트 임베딩 생성 중 오류 발생: {e}")
-            continue  # 오류가 발생한 텍스트는 건너뛰고 계속 진행
+            logger.error(f"배치 임베딩 생성 중 오류 발생: {e}")
+            continue
 
     # 임베딩이 생성된 텍스트만 ChromaDB에 추가
-    valid_texts = [text for text, emb in zip(texts, embeddings) if emb]
-    valid_embeddings = [emb for emb in embeddings if emb]
-
-    if valid_texts and valid_embeddings:
-        logger.info(f"{len(valid_texts)}개의 유효한 문서를 ChromaDB에 추가")
-        for i in range(0, len(valid_texts), 10):
-            batch_texts = valid_texts[i:i+10]
-            batch_embeddings = valid_embeddings[i:i+10]
-            #batch_ids = [f"doc_{j}" for j in range(i, i+len(batch_texts))]
-            #batch_ids를 uuid로 변경
-            batch_ids = [str(uuid.uuid4()) for j in range(i, i+len(batch_texts))]
+    if embeddings:
+        logger.info(f"{len(embeddings)}개의 유효한 문서를 ChromaDB에 추가")
+        for i in range(0, len(texts), 10):
+            batch_texts = texts[i:i+10]
+            batch_embeddings = embeddings[i:i+10]
+            batch_ids = [str(uuid.uuid4()) for _ in range(len(batch_texts))]
             
             collection.add(
                 embeddings=batch_embeddings,
                 documents=batch_texts,
                 ids=batch_ids
             )
-            
             logger.info(f"{i+len(batch_texts)}개의 문서 추가 완료")
-            time.sleep(0.5)
     else:
-        logger.warning("유효한 임베딩이 생성되지 않았습니다. 입력 텍스트와 API 키를 확인하세요.")
+        logger.warning("유효한 임베딩이 생성되지 않았습니다.")
 
 def query(question: str, k: int = 10):
     # logger.info(f"질문에 대한 임베딩 생성 시작: {question}")
     # Solar 모델을 사용하여 질문 임베딩
     response = client.embeddings.create(
         input=question,
-        model="solar-embedding-1-large-query"
+        model="embedding-query"
     )
     query_embedding = response.data[0].embedding
     # print(len(collection.get()))
@@ -122,13 +122,6 @@ Answer은 사용자에게 제공할 답변입니다. 최대한 정확하고 자�
 
 
 def generate_answer(question: str, context: List[str]):
-    # logger.info("답변 생성 시작")
-    # Solar API를 사용하여 답변 생성
-    # print(context)
-    # for c in context:
-    #    print(c)
-    #    print("-"*100)
-
     contexts = '\n'.join(context)
     prompt = f"""Context:
     {contexts}
@@ -138,13 +131,14 @@ def generate_answer(question: str, context: List[str]):
     Answer:"""
 
     response = client.chat.completions.create(
-        model="solar-1-mini-chat",
+        model="solar-pro",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
-        ]
+        ],
+        max_tokens=1024
     )
-    #logger.info("답변 생성 완료")
+    
     logger.info(question)
     logger.info(response.choices[0].message.content)
     return response.choices[0].message.content.strip()
@@ -158,16 +152,29 @@ class SearchQuery(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("애플리케이션 시작")
-    global documents
+    global documents, df
+
+    # 현재 파일의 디렉토리 경로를 가져옴
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(current_dir, '2024년 지역축제 개최계획(수정).csv')
+
     # CSV 파일 읽기
+    df = pd.read_csv(csv_path, encoding='utf-8')
+    df.columns = df.iloc[0]
+    df = df[1:]
+    df.columns = df.columns.str.replace('\n', '').str.strip()
 
-    logger.info("CSV 파일 로드 완료")
-
-    # 문서 준비 및 추가
-    documents = prepare_documents(df)
-    logger.info("문서 준비 완료")
-    add_documents(documents)
-    logger.info("문서 추가 완료")
+    # ChromaDB에 데이터가 있는지 확인
+    existing_data = collection.get()
+    
+    if not existing_data['documents']:  # 데이터가 없는 경우에만 임베딩 생성
+        logger.info("ChromaDB가 비어있어 새로운 임베딩을 생성합니다.")
+        documents = prepare_documents(df)
+        logger.info("문서 준비 완료")
+        add_documents(documents)
+        logger.info("문서 추가 완료")
+    else:
+        logger.info(f"기존 ChromaDB 데이터 사용 중: {len(existing_data['documents'])}개의 문서")
 
     yield
 
@@ -175,17 +182,9 @@ async def lifespan(app: FastAPI):
 
 limiter = Limiter(key_func=get_remote_address)
 # app = FastAPI(lifespan=lifespan)
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# CSV 파일 읽기
-df = pd.read_csv('/Users/bokyung/Desktop/LLM-RAG-LANGCHAIN/0907/2024년 지역축제 개최계획(수정).csv', encoding='utf-8')
-df.columns = df.iloc[0]
-df = df[1:]
-
-# 열 이름에서 개행 문자 제거 및 공백 제거
-df.columns = df.columns.str.replace('\n', '').str.strip()
 
 def search_data(query):
     mask = df.apply(lambda row: row.astype(str).str.contains(query, case=False).any(), axis=1)

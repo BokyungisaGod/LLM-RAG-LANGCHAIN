@@ -1,5 +1,8 @@
 import requests
 import streamlit as st
+import pandas as pd
+import re
+import os
 
 # SERVER_URL 정의 추가
 SERVER_URL = "http://localhost:8000" 
@@ -12,7 +15,12 @@ import re
 # 데이터 로드
 @st.cache_data
 def load_data():
-    df = pd.read_csv('0907/2024년 지역축제 개최계획(수정).csv', encoding='utf-8')
+    # 현재 파일의 디렉토리 경로를 가져옴
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(current_dir, '2024년 지역축제 개최계획(수정).csv')
+    
+    # CSV 파일 읽기
+    df = pd.read_csv(csv_path, encoding='utf-8')
     df.columns = df.iloc[0]
     df = df[1:]
     return df
@@ -62,18 +70,17 @@ def embedding_search():
 def augmented_search():
     query = st.session_state.augmented_query
     if query:
-        response = requests.post(f"{SERVER_URL}/ask", json={"text": query})
-        
-        if response.status_code == 200:
+        try:
+            response = requests.post(f"{SERVER_URL}/ask", json={"text": query})
+            print(f"Response status: {response.status_code}")
+            print(f"Response content: {response.content}")
             answer = response.json()["answer"]
             answer = highlight_match(answer, query)
             # 쿼리 변수 앞뒤 공백 제거
             query2 = query.strip()
             st.session_state.search_history.append(f"**AI - RAG 검색어: {query2}**\n\n{answer}\n\n---\n\n")
-        elif response.status_code == 429:
-            st.error("요청 한도를 초과했습니다. 1분 후에 다시 시도해 주세요.")
-        else:
-            st.error("서버에서 응답을 받지 못했습니다. 다시 시도해 주세요.")
+        except Exception as e:
+            st.error(f"Error during request: {str(e)}")
     else:
         st.warning("질문을 입력해 주세요.")
 
